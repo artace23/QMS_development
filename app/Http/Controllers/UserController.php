@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\Staff;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Response;
 use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
@@ -49,7 +50,6 @@ class UserController extends Controller
 
     public function transaction_list() {
         $data = Transaction::all();
-
         return view('register', ['data' => $data]);
     }
 
@@ -57,6 +57,39 @@ class UserController extends Controller
         return Staff::all();
     }
 
+    public function next(Request $request) {
+        $incomingFields = $request->validate([
+            'ongoing_no' => 'required'
+        ]);
+
+        
+        $loggedInUserId = auth()->id();
+    
+        $ongoing_no = $incomingFields['ongoing_no'];
+        
+        $pending_no = $request->filled('pending_no') ? $request->input('pending_no') : null;
+    
+        // Call the stored procedure to update the queue status
+        DB::select('CALL UpdateQueueStatus(?, ?)', [$pending_no, $loggedInUserId]);
+
+        // Call the stored procedure to update the queue status
+        DB::select('CALL UpdateQueueStatusDone(?)', [$ongoing_no]);
+
+        // return view('home');
+        return redirect('/');
+    }
+
+    public function call(Request $request) {
+        $incomingFields = $request->validate([
+            'pending_no' => 'required'
+        ]);
+        
+        $loggedInUserId = auth()->id();
+        
+        DB::select('CALL UpdateQueueStatus(?, ?)', [$incomingFields['pending_no'], $loggedInUserId]);
+
+        return redirect('/');
+    }
 
     public function index()
     {
@@ -69,22 +102,29 @@ class UserController extends Controller
             $user = Transaction::where('transaction_id', $userData)->pluck('transaction_name');
 
             if($loggedInUserId == 1) {
-                return view('admin');
+                return redirect('/admin');
             }
 
             else {
                 $queuelogs = DB::select('CALL GetQueueLogs(?)', [$userData]);
+                $firstQueue = null;
+                $firstQueueLog = null;
                 
                 // Check if $queuelogs is not empty and is an array
                 if (!empty($queuelogs) && is_array($queuelogs)) {
                     // Get the first item from the array
-                    $firstQueueLog = reset($queuelogs);
-                } else {
-                    // If $queuelogs is empty or not an array, set $firstQueueLog to null
-                    $firstQueueLog = null;
-                }
+                    $firstQueue = reset($queuelogs);
+
+                } 
+
+                $pendinglogs = DB::select('CALL GetPendingLogs(?, ?)', [$userData, $loggedInUserId]);
+
+                if (!empty($pendinglogs) && is_array($pendinglogs)) {
+                    // Get the first item from the array
+                    $firstQueueLog = reset($pendinglogs);
+                } 
                 // Pass the data to the view
-                return view('home', ['userData' => $user, 'queue' => $queuelogs, 'first' => $firstQueueLog]);
+                return view('home', ['userId' => $loggedInUserId,'userData' => $user, 'queue' => $queuelogs, 'pending_first' => $firstQueue , 'first' => $firstQueueLog]);
             }
         }
         
@@ -107,7 +147,15 @@ class UserController extends Controller
         $queueing->status = 1;
         $queueing->save();
 
-        return 'Your Number is ' . $latestQueueNo;
+        $timestamp = Carbon::now('Asia/Manila')->format('YmdHis');
+        $fileName = 'queue_numbers_' . $timestamp . '.txt';
+
+        // Save the file to the storage directory
+        $filePath = storage_path('app/' . $fileName);
+        file_put_contents($filePath, $latestQueueNo);
+
+        // Provide download link to the user
+        return Response::download($filePath, $fileName);
     }
 
     public function user_transact() {
@@ -116,7 +164,47 @@ class UserController extends Controller
         return view('user', ['data' => $data]);
     }
 
-    public function next(Request $request) {
+    public function display_index() {
+        $dataQueue = DB::select('CALL DisplayQueueLogs()');
+        $dataPending = DB::select('CALL DisplayPendingLogs()');
 
+        return view('display', ['Ongoing' => $dataQueue, 'Pending' => $dataPending]);
+    }
+
+    public function currentServing() {
+        $dataPending = DB::select('SELECT * FROM manange_queue mq INNER JOIN users u ON u.id = mq.user_id INNER JOIN window w ON u.window_id = w.window_id WHERE status = 2 AND DATE(timestamp) = DATE(NOW())');
+        return response()->json($dataPending);
+    }
+
+    public function fetchOngoingQueues() {
+        $dataQueue = DB::select('CALL DisplayQueueLogs()');
+        return response()->json($dataQueue);
+    }
+
+    public function fetchFirstQueue() {
+        $loggedInUserId = auth()->id();
+
+        $userData = User::where('id', $loggedInUserId)->value('transaction_id');
+        $queuelogs = DB::select('CALL GetQueueLogs(?)', [$userData]);
+            $firstQueue = null;
+            
+            // Check if $queuelogs is not empty and is an array
+            if (!empty($queuelogs) && is_array($queuelogs)) {
+                // Get the first item from the array
+                $firstQueue = reset($queuelogs);
+
+            } 
+
+            return response()->json($firstQueue);
+    }
+
+
+    public function fetchStaffPendingQueue() {
+        $loggedInUserId = auth()->id();
+
+        $userData = User::where('id', $loggedInUserId)->value('transaction_id');
+        $queuelogs = DB::select('CALL GetQueueLogs(?)', [$userData]);
+            
+        return response()->json($queuelogs);
     }
 }
